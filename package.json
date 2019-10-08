@@ -1,0 +1,8 @@
+{
+    "dependencies": {
+        "@react-native-community/async-storage": "^1.6.2"
+    },
+    "devDependencies": {
+        "shadow-cljs": "^2.8.39"
+    }
+}

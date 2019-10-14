@@ -20,7 +20,7 @@
  (fn [{:keys [key value on-complete on-error]}]
    (->  AsyncStorage
         (j/call :setItem (->db-key key) (->db value))
-        (j/call :then #(do (swap! subs/values assoc key value)
+        (j/call :then #(do (subs/reset! key value)
                            (when on-complete (dispatch (conj (vec on-complete) %)))))
         (j/call :catch #(when on-error (dispatch (conj (vec on-error) %)))))))
 
@@ -29,6 +29,6 @@
  (fn [{:keys [key on-complete on-error]}]
    (->  AsyncStorage
         (j/call :removeItem (->db-key key))
-        (j/call :then #(do (swap! subs/values dissoc key)
+        (j/call :then #(do (swap! subs/subscriptions dissoc key)
                            (when on-complete (dispatch (conj (vec on-complete) %)))))
         (j/call :catch #(when on-error (dispatch (conj (vec on-error) %)))))))

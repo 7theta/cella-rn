@@ -9,32 +9,45 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns cella.subs
-  (:refer-clojure :exclude [keys])
+  (:refer-clojure :exclude [keys reset! realized?])
   (:require [cella.coerce :refer [db-> db-key-> ->db-key]]
             [reagent.core :as r]
-            [reagent.ratom :as ra]
             ["@react-native-community/async-storage" :default AsyncStorage]
             [utilis.js :as j]))
 
 (defonce subscriptions (r/atom {}))
-(defonce values (r/atom {}))
+(defonce realized-keys (r/atom #{}))
+
+(defn reset!
+  [key value]
+  (swap! realized-keys conj key)
+  (when-let [value-atom (get @subscriptions key)]
+    (clojure.core/reset! value-atom value) value))
 
 (defn subscribe
   [key]
   (when-not (get @subscriptions key)
-    (swap! subscriptions assoc key (ra/make-reaction #(get @values key)))
-    (->  AsyncStorage
-         (j/call :getItem (->db-key key))
-         (j/call :then #(when-let [v (not-empty (db-> %))] (swap! values assoc key v)))
-         (j/call :catch #(js/console.error "cella.subs/subscribe" %))))
+    (let [value-atom (r/atom nil)]
+      (swap! subscriptions assoc key value-atom)
+      (->  AsyncStorage
+           (j/call :getItem (->db-key key))
+           (j/call :then #(do (swap! realized-keys conj key)
+                              (when-let [v (not-empty (db-> %))]
+                                (reset! key v))))
+           (j/call :catch #(js/console.error "cella.subs/subscribe" %)))))
   (get @subscriptions key))
+
+(defn realized?
+  [key]
+  (boolean (get @realized-keys key)))
 
 (defn keys
   []
   (when-not (get @subscriptions ::all-keys)
-    (swap! subscriptions assoc ::all-keys (ra/make-reaction #(get @values ::all-keys)))
-    (->  AsyncStorage
-         (j/call :getAllKeys)
-         (j/call :then #(swap! values assoc ::all-keys (map db-key-> %)))
-         (j/call :catch #(js/console.error "cella.subs/all-keys" %))))
+    (let [value-atom (r/atom nil)]
+      (swap! subscriptions assoc ::all-keys value-atom)
+      (->  AsyncStorage
+           (j/call :getAllKeys)
+           (j/call :then #(reset! ::all-keys (map db-key-> %)))
+           (j/call :catch #(js/console.error "cella.subs/all-keys" %)))))
   (get @subscriptions ::all-keys))

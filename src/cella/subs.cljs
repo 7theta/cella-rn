@@ -29,12 +29,12 @@
   (when-not (get @subscriptions key)
     (let [value-atom (r/atom nil)]
       (swap! subscriptions assoc key value-atom)
-      (->  AsyncStorage
-           (j/call :getItem (->db-key key))
-           (j/call :then #(do (swap! realized-keys conj key)
-                              (when-let [v (not-empty (db-> %))]
-                                (reset! key v))))
-           (j/call :catch #(js/console.error "cella.subs/subscribe" %)))))
+      (-> AsyncStorage
+          (j/call :getItem (->db-key key))
+          (j/call :then #(do (swap! realized-keys conj key)
+                             (when-let [v (not-empty (db-> %))]
+                               (reset! key v))))
+          (j/call :catch #(js/console.error "cella.subs/subscribe" %)))))
   (get @subscriptions key))
 
 (defn realized?

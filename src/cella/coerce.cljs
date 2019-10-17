@@ -20,14 +20,14 @@
 (defn- ->db
   [m]
   (-> m
-      (xform-map clojure.core/name
+      (xform-map ->db-key
                  (fn [v]
                    (cond
                      (keyword? v)
                      ["cella/kw" (name v)]
 
                      (date? v)
-                     ["cella/date" (.getTime m)]
+                     ["cella/date" (.getTime v)]
 
                      :else v)))
       clj->js
@@ -37,7 +37,7 @@
   [m]
   (-> (js/JSON.parse m)
       js->clj
-      (xform-map clojure.core/keyword
+      (xform-map db-key->
                  (fn [v]
                    (cond
                      (and (vector? v) (= "cella/kw" (first v)))

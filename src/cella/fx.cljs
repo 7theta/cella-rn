@@ -7,7 +7,6 @@
 ;;   By using this software in any fashion, you are agreeing to be bound by
 ;;   the terms of this license.
 ;;   You must not remove this notice, or any others, from this software.
-
 (ns cella.fx
   (:require [cella.subs :as subs]
             [cella.coerce :refer [->db ->db-key]]

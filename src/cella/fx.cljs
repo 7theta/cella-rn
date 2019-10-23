@@ -28,6 +28,6 @@
  (fn [{:keys [key on-complete on-error]}]
    (->  AsyncStorage
         (j/call :removeItem (->db-key key))
-        (j/call :then #(do (swap! subs/subscriptions dissoc key)
+        (j/call :then #(do (subs/remove-key! key)
                            (when on-complete (dispatch (conj (vec on-complete) %)))))
         (j/call :catch #(when on-error (dispatch (conj (vec on-error) %)))))))

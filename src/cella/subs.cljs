@@ -22,7 +22,16 @@
   [key value]
   (swap! realized-keys conj key)
   (when-let [value-atom (get @subscriptions key)]
-    (clojure.core/reset! value-atom value) value))
+    (clojure.core/reset! value-atom value) value)
+  (when-let [all-keys (get @subscriptions ::all-keys)]
+    (swap! all-keys conj key)))
+
+(defn remove-key!
+  [key]
+  (swap! realized-keys disj key)
+  (swap! subscriptions dissoc key)
+  (when-let [all-keys (get @subscriptions ::all-keys)]
+    (swap! all-keys disj key)))
 
 (defn subscribe
   [key]
@@ -48,6 +57,6 @@
       (swap! subscriptions assoc ::all-keys value-atom)
       (->  AsyncStorage
            (j/call :getAllKeys)
-           (j/call :then #(reset! ::all-keys (map db-key-> %)))
+           (j/call :then #(reset! ::all-keys (set (map db-key-> %))))
            (j/call :catch #(js/console.error "cella.subs/all-keys" %)))))
   (get @subscriptions ::all-keys))

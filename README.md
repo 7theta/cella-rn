@@ -7,8 +7,9 @@
 [![Circle CI](https://circleci.com/gh/7theta/cella-rn.svg?style=shield)](https://circleci.com/gh/7theta/cella-rn)
 [![Dependencies Status](https://jarkeeper.com/7theta/cella-rn/status.svg)](https://jarkeeper.com/7theta/cella-rn)
 
-Wrapper for [React Native Async Storage](https://github.com/react-native-community/async-storage)
+Wrapper for [WatermelonDB](https://github.com/Nozbe/WatermelonDB) in
+React Native.
 
 ## Copyright and License
 
-Copyright © 2019 7theta
+Copyright © 2021 7theta

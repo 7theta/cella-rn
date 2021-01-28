@@ -9,54 +9,53 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns cella.subs
-  (:refer-clojure :exclude [keys reset! realized?])
-  (:require [cella.coerce :refer [db-> db-key-> ->db-key]]
-            [reagent.core :as r]
-            ["@react-native-community/async-storage" :default AsyncStorage]
-            [utilis.js :as j]))
+  (:require [cella.connection :as db]
+            [re-frame.core :as rf]
+            [reagent.ratom :as rr]
+            [integrant.core :as ig]
+            [utilis.js :as j]
+            [utilis.fn :refer [fsafe]]))
 
-(defonce subscriptions (r/atom {}))
-(defonce realized-keys (r/atom #{}))
+;;; Declarations
 
-(defn reset!
-  [key value]
-  (swap! realized-keys conj key)
-  (when-let [value-atom (get @subscriptions key)]
-    (clojure.core/reset! value-atom value) value)
-  (when-let [all-keys (get @subscriptions ::all-keys)]
-    (swap! all-keys conj key)))
+(declare ensure-observable)
 
-(defn remove-key!
-  [key]
-  (swap! realized-keys disj key)
-  (swap! subscriptions dissoc key)
-  (when-let [all-keys (get @subscriptions ::all-keys)]
-    (swap! all-keys disj key)))
+;;; Integrant
 
-(defn subscribe
-  [key]
-  (when-not (get @subscriptions key)
-    (let [value-atom (r/atom nil)]
-      (swap! subscriptions assoc key value-atom)
-      (-> AsyncStorage
-          (j/call :getItem (->db-key key))
-          (j/call :then #(do (swap! realized-keys conj key)
-                             (when-let [v (not-empty (db-> %))]
-                               (reset! key v))))
-          (j/call :catch #(js/console.error "cella.subs/subscribe" %)))))
-  (get @subscriptions key))
+(defmethod ig/init-key :cella/subs [_ {:keys [db-connection]}]
+  (let [subscriptions (atom {})]
+    (rf/reg-sub-raw
+     :cella/subscribe
+     (fn [_ [_ expr]]
+       (let [a (rr/atom nil)
+             dispose (atom nil)
+             expr (ensure-observable expr)]
+         (-> db-connection
+             (db/run expr)
+             (j/call :then (fn [result]
+                             (cond
+                               (coll? result) (reset! a result)
 
-(defn realized?
-  [key]
-  (boolean (get @realized-keys key)))
+                               (j/get result ":cella/subscribe")
+                               (let [subscription (j/call result ":cella/subscribe" (partial reset! a))]
+                                 (reset! dispose (fn [] (j/call subscription :unsubscribe))))
 
-(defn keys
-  []
-  (when-not (get @subscriptions ::all-keys)
-    (let [value-atom (r/atom nil)]
-      (swap! subscriptions assoc ::all-keys value-atom)
-      (->  AsyncStorage
-           (j/call :getAllKeys)
-           (j/call :then #(reset! ::all-keys (set (map db-key-> %))))
-           (j/call :catch #(js/console.error "cella.subs/all-keys" %)))))
-  (get @subscriptions ::all-keys))
+                               :else (js/console.warn "Unhandled subscribe value" result))))
+             (j/call :catch #(js/console.warn %)))
+         (rr/make-reaction (fn [] @a) :on-dispose #((fsafe @dispose))))))))
+
+(defmethod ig/halt-key! :cella/subs [_ _])
+
+;;; Implementation
+
+(defn- ensure-observable
+  [expr]
+  (condp = (first (last expr))
+    :observe expr
+    :fetch expr
+    :query (conj (vec expr) [:observe])
+    :table (vec (concat expr [[:query] [:observe]]))
+    (throw
+     (new js/Error
+          (str "An expression must either end with a :fetch or :observe call: "
+               (pr-str expr))))))

@@ -1,6 +1,6 @@
 {
     "dependencies": {
-        "@react-native-community/async-storage": "^1.6.2"
+        "@nozbe/watermelondb": "^0.20.0"
     },
     "devDependencies": {
         "shadow-cljs": "^2.8.39"

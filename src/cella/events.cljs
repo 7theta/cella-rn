@@ -9,20 +9,18 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns cella.events
-  (:require [cella.fx]
-            [re-frame.core :refer [reg-event-fx]]))
+  (:require [cella.connection :as db]
+            [integrant.core :as ig]
+            [re-frame.core :refer [reg-event-fx reg-fx]]))
 
-(reg-event-fx
- :cella.async-storage/set!
- (fn [{:keys [db]} [_ props]]
-   {:cella.async-storage/set! props}))
-
-(reg-event-fx
- :cella.async-storage/remove!
- (fn [{:keys [db]} [_ props]]
-   {:cella.async-storage/remove! props}))
-
-(reg-event-fx
- :cella.async-storage/clear!
- (fn [{:keys [db]} [_ props]]
-   {:cella.async-storage/clear! props}))
+(defmethod ig/init-key :cella/events [_ {:keys [db-connection]}]
+  (reg-fx
+   :cella/run
+   (fn [expr]
+     (try (db/run db-connection expr)
+          (catch js/Error e
+            (js/console.warn e)))))
+  (reg-event-fx
+   :cella/run
+   (fn [_ [_ expr]]
+     {:cella/run expr})))

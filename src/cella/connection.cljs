@@ -25,7 +25,8 @@
 
 ;;; Declarations
 
-(declare model-classes schema->columns ->sql sql-> encode decode cella-transformer with-registry date-schema connect)
+(declare model-classes schema->columns ->sql sql-> encode decode cella-transformer with-registry date-schema connect
+         copy-fn)
 
 (defn date?
   [x]
@@ -35,7 +36,10 @@
 
 (defmethod ig/init-key :cella/connection
   [_ {:keys [db-name schema-version tables] :as opts}]
-  (connect opts))
+  (try (connect opts)
+       (catch js/Error e
+         (js/console.warn e)
+         (throw e))))
 
 (defmethod ig/halt-key! :cella/connection
   [_ connection])
@@ -73,7 +77,7 @@
                  :actionsEnabled true}))
       (j/assoc! :schemas (->> tables
                               (map (fn [{:keys [name schema]}]
-                                     (let [tx (mt/transformer mt/string-transformer cella-transformer)]
+                                     (let [tx (mt/transformer mt/json-transformer cella-transformer)]
                                        [name {:schema schema
                                               :encoder (m/encoder schema tx)
                                               :decoder (m/decoder schema tx)}])))
@@ -84,17 +88,30 @@
   (reduce (fn [result [op & args]]
             (condp = op
               :table (j/call result :get (->sql (first args)))
-              :create (let [prepped-rows (map (comp (fn [prepped-row]
-                                                   (fn [row]
-                                                     (doseq [[k v] prepped-row]
-                                                       (j/call row :_setRaw k v))))
-                                                 (partial encode {:table (sql-> (j/get result :table))
-                                                            :schemas (j/get database :schemas)})) args)]
+              :create (let [copy-fns (map (partial copy-fn database (j/get result :table)) args)]
                         (fn []
-                          (->> prepped-rows
+                          (->> copy-fns
                                (map (fn [copy-fn] (j/call result :prepareCreate copy-fn)))
                                (clj->js)
                                (j/call database :batch))))
+              :update (let [[update-row & _] args]
+                        (fn []
+                          (new js/Promise
+                               (fn [resolve reject]
+                                 (-> (result)
+                                     (j/call :then #(->> update-row
+                                                         (copy-fn database (j/get-in % [:collection :table]))
+                                                         (j/call % :update)))
+                                     (j/call :then resolve)
+                                     (j/call :catch reject))))))
+              :find (let [[id & _] args]
+                      (fn []
+                        (new js/Promise
+                             (fn [resolve reject]
+                               (-> result
+                                   (j/call :find id)
+                                   (j/call :then resolve)
+                                   (j/call :catch reject))))))
               :query (->> args
                           (map (partial compile database))
                           (apply j/call result :query))
@@ -108,13 +125,25 @@
               :observe (fn []
                          (new js/Promise
                               (fn [resolve reject]
-                                (try (let [observable (j/call result :observe)
-                                           decode (partial decode {:schemas (j/get database :schemas)})]
-                                       (j/assoc! observable ":cella/subscribe"
-                                                 (fn [f]
-                                                   (j/call observable :subscribe
-                                                           (comp f decode))))
-                                       (resolve observable))
+                                (try (let [result (if (fn? result) (result) result)
+                                           observe (fn [observable]
+                                                     (let [observable (j/call observable :observe)
+                                                           decode (partial decode {:schemas (j/get database :schemas)})]
+                                                       (j/assoc! observable ":cella/subscribe"
+                                                                 (fn [f]
+                                                                   (j/call observable :subscribe
+                                                                           (comp f decode))))
+                                                       (resolve observable)))]
+                                       (cond
+                                         (j/get result :observe)
+                                         (observe result)
+
+                                         (j/get result :then) ;; promise
+                                         (-> result
+                                             (j/call :then observe)
+                                             (j/call :catch reject))
+
+                                         :else (reject (new js/Error "Unable to observe" result))))
                                      (catch js/Error e
                                        (reject e))))))))
           database
@@ -285,6 +314,7 @@
   [schema]
   (let [type (m/type schema)]
     (or (sql-type (cond
+                    (= :sequential type) (resolve-type (last (m/form schema)))
                     (keyword? type) type
                     (or (fn? type) (symbol? type)) (get symbol->keyword type)
                     :else (throw (ex-info "Unhandled type" {:type type}))))
@@ -323,3 +353,11 @@
   (m/-simple-schema
    {:type :date
     :pred date?}))
+
+(defn copy-fn
+  [database table row]
+  (let [prepped-row (encode {:table (sql-> table)
+                             :schemas (j/get database :schemas)} row)]
+    (fn [row]
+      (doseq [[k v] prepped-row]
+        (j/assoc-in! row [:_raw k] v)))))

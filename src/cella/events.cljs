@@ -11,16 +11,22 @@
 (ns cella.events
   (:require [cella.connection :as db]
             [integrant.core :as ig]
-            [re-frame.core :refer [reg-event-fx reg-fx]]))
+            [utilis.js :as j]
+            [re-frame.core :refer [reg-event-fx reg-fx dispatch]]))
 
 (defmethod ig/init-key :cella/events [_ {:keys [db-connection]}]
   (reg-fx
    :cella/run
-   (fn [expr]
-     (try (db/run db-connection expr)
+   (fn [{:keys [expr on-success on-error]}]
+     (try (-> db-connection
+              (db/run expr)
+              (j/call :then #(when on-success (dispatch (conj on-success %))))
+              (j/call :catch #(when on-error (dispatch (conj on-error %)))))
           (catch js/Error e
             (js/console.warn e)))))
   (reg-event-fx
    :cella/run
-   (fn [_ [_ expr]]
-     {:cella/run expr})))
+   (fn [_ [_ expr {:keys [on-success on-error]}]]
+     {:cella/run {:expr expr
+                  :on-success on-success
+                  :on-error on-error}})))

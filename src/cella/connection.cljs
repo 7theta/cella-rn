@@ -125,13 +125,25 @@
               :observe (fn []
                          (new js/Promise
                               (fn [resolve reject]
-                                (try (let [observable (j/call result :observe)
-                                           decode (partial decode {:schemas (j/get database :schemas)})]
-                                       (j/assoc! observable ":cella/subscribe"
-                                                 (fn [f]
-                                                   (j/call observable :subscribe
-                                                           (comp f decode))))
-                                       (resolve observable))
+                                (try (let [result (if (fn? result) (result) result)
+                                           observe (fn [observable]
+                                                     (let [observable (j/call observable :observe)
+                                                           decode (partial decode {:schemas (j/get database :schemas)})]
+                                                       (j/assoc! observable ":cella/subscribe"
+                                                                 (fn [f]
+                                                                   (j/call observable :subscribe
+                                                                           (comp f decode))))
+                                                       (resolve observable)))]
+                                       (cond
+                                         (j/get result :observe)
+                                         (observe result)
+
+                                         (j/get result :then) ;; promise
+                                         (-> result
+                                             (j/call :then observe)
+                                             (j/call :catch reject))
+
+                                         :else (reject (new js/Error "Unable to observe" result))))
                                      (catch js/Error e
                                        (reject e))))))))
           database

@@ -53,9 +53,5 @@
   (condp = (first (last expr))
     :observe expr
     :fetch expr
-    :query (conj (vec expr) [:observe])
     :table (vec (concat expr [[:query] [:observe]]))
-    (throw
-     (new js/Error
-          (str "An expression must either end with a :fetch or :observe call: "
-               (pr-str expr))))))
+    (conj (vec expr) [:observe])))

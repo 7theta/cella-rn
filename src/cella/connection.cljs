@@ -96,32 +96,20 @@
                                (j/call database :batch))))
               :update (let [[update-row & _] args]
                         (fn []
-                          (new js/Promise
-                               (fn [resolve reject]
-                                 (-> (result)
-                                     (j/call :then #(->> update-row
-                                                         (copy-fn database (j/get-in % [:collection :table]))
-                                                         (j/call % :update)))
-                                     (j/call :then resolve)
-                                     (j/call :catch reject))))))
+                          (j/call (result) :then
+                                  #(->> update-row
+                                        (copy-fn database (j/get-in % [:collection :table]))
+                                        (j/call % :update)))))
+              :delete (fn [] (j/call (result) :then #(j/call % :markAsDeleted)))
               :find (let [[id & _] args]
-                      (fn []
-                        (new js/Promise
-                             (fn [resolve reject]
-                               (-> result
-                                   (j/call :find id)
-                                   (j/call :then resolve)
-                                   (j/call :catch reject))))))
+                      (fn [] (j/call result :find id)))
               :query (->> args
                           (map (partial compile database))
                           (apply j/call result :query))
               :fetch (fn []
-                       (new js/Promise
-                            (fn [resolve reject]
-                              (-> result
-                                  (j/call :fetch)
-                                  (j/call :then (comp resolve (partial decode {:schemas (j/get database :schemas)})))
-                                  (j/call :catch reject)))))
+                       (-> result
+                           (j/call :fetch)
+                           (j/call :then (partial decode {:schemas (j/get database :schemas)}))))
               :observe (fn []
                          (new js/Promise
                               (fn [resolve reject]

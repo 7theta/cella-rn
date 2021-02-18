@@ -25,8 +25,8 @@
 
 ;;; Declarations
 
-(declare model-classes schema->columns ->sql sql-> encode decode cella-transformer with-registry date-schema connect
-         copy-fn)
+(declare model-class schema->columns ->sql sql-> encode decode cella-transformer with-registry date-schema connect
+         copy-fn check-js-support)
 
 (defn date?
   [x]
@@ -36,7 +36,9 @@
 
 (defmethod ig/init-key :cella/connection
   [_ {:keys [db-name schema-version tables] :as opts}]
-  (try (connect opts)
+  (try (doseq [{:keys [message]} (remove :supported (check-js-support))]
+         (js/console.warn message))
+       (connect opts)
        (catch js/Error e
          (js/console.warn e)
          (throw e))))
@@ -67,29 +69,21 @@
                      (clj->js
                       {:schema schema
                        :dbName (->sql db-name)
-                       :synchronous false}))]
-    (let [model-classes (try (->> tables
-                                  (map (comp ->sql :name))
-                                  (model-classes))
-                             (catch js/Error e
-                               (js/console.warn e "Error occurred generating model classes.")
-                               (throw e)))
-          db (try (new Database
-                       (clj->js
-                        {:adapter adapter
-                         :modelClasses model-classes
-                         :actionsEnabled true}))
-                  (catch js/Error e
-                    (js/console.warn e "Error occurred creating WatermelonDB instance.")
-                    (throw e)))]
-      (j/assoc! db :schemas (->> tables
-                                 (map (fn [{:keys [name schema]}]
-                                        (let [tx (mt/transformer mt/json-transformer cella-transformer)]
-                                          [name {:schema schema
-                                                 :encoder (m/encoder schema tx)
-                                                 :decoder (m/decoder schema tx)}])))
-                                 (into {})))
-      db)))
+                       :synchronous false}))
+        model-classes (doall (map (comp model-class ->sql :name) tables))
+        db (new Database
+                (clj->js
+                 {:adapter adapter
+                  :modelClasses model-classes
+                  :actionsEnabled true}))]
+    (j/assoc! db :schemas (->> tables
+                               (map (fn [{:keys [name schema]}]
+                                      (let [tx (mt/transformer mt/json-transformer cella-transformer)]
+                                        [name {:schema schema
+                                               :encoder (m/encoder schema tx)
+                                               :decoder (m/decoder schema tx)}])))
+                               (into {})))
+    db))
 
 (defn compile
   [database expr]
@@ -147,8 +141,7 @@
 
 (defn run
   [database expr]
-  (let [f (compile database expr)]
-    (f)))
+  ((compile database expr)))
 
 (defn run-action
   [database expr]
@@ -229,27 +222,6 @@
                                 {})
                         (decoder)))
     :else value))
-
-(defn extend-class
-  [class]
-  (let [target-atom (atom nil)
-        target (fn [& args] (js/Reflect.construct class (clj->js args) @target-atom))]
-    (reset! target-atom target)
-    (js/Object.assign (j/get target :prototype) (j/get class :prototype))
-    (js/Object.assign target class)
-    (when-let [props (js/Object.getOwnPropertyDescriptors (j/get class :prototype))]
-      (doseq [prop (remove #{"constructor"} (js->clj (js/Object.keys props)))]
-        (js/Object.defineProperty
-         (j/get target :prototype)
-         prop (j/get props prop))))
-    target))
-
-(defn model-classes
-  [table-names]
-  (map (fn [table-name]
-         (doto (extend-class Model)
-           (j/assoc! :table (name table-name))))
-       table-names))
 
 (def symbol->keyword
   {'any? :any
@@ -362,3 +334,44 @@
     (fn [row]
       (doseq [[k v] prepped-row]
         (j/assoc-in! row [:_raw k] v)))))
+
+(defn get-own-property-descriptors
+  [obj]
+  (let [names (js/Object.getOwnPropertyNames obj)]
+    (when (and names (pos? (j/get names :length)))
+      (let [result (new js/Object)]
+        (j/call names :forEach
+                (fn [property-name]
+                  (->> property-name
+                       (js/Object.getOwnPropertyDescriptor obj)
+                       (j/assoc! result property-name))))
+        result))))
+
+(defn extend-class
+  [class]
+  (let [target-atom (atom nil)
+        target (fn [& args]
+                 (let [result (js/Reflect.construct class (clj->js args) @target-atom)]
+                   result))]
+    (reset! target-atom target)
+    (js/Object.assign (j/get target :prototype) (j/get class :prototype))
+    (js/Object.assign target class)
+    (when-let [props (get-own-property-descriptors (j/get class :prototype))]
+      (doseq [prop (remove #{"constructor"} (js->clj (js/Object.keys props)))]
+        (js/Object.defineProperty
+         (j/get target :prototype)
+         prop (j/get props prop))))
+    target))
+
+(defn model-class
+  [table-name]
+  (doto (extend-class Model)
+    (j/assoc! :table (name table-name))))
+
+(defn check-js-support
+  []
+  [{:name :reflect
+    :message "No support for 'js/Reflect' found. WatermelonDB relies on this property, and it must be polyfilled, or a version of js used that supports it."
+    :supported (try js/Reflect true
+                    (catch js/Error e
+                      false))}])

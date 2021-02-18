@@ -68,20 +68,28 @@
                       {:schema schema
                        :dbName (->sql db-name)
                        :synchronous false}))]
-    (doto (new Database
-               (clj->js
-                {:adapter adapter
-                 :modelClasses (->> tables
-                                    (map (comp ->sql :name))
-                                    (model-classes))
-                 :actionsEnabled true}))
-      (j/assoc! :schemas (->> tables
-                              (map (fn [{:keys [name schema]}]
-                                     (let [tx (mt/transformer mt/json-transformer cella-transformer)]
-                                       [name {:schema schema
-                                              :encoder (m/encoder schema tx)
-                                              :decoder (m/decoder schema tx)}])))
-                              (into {}))))))
+    (let [model-classes (try (->> tables
+                                  (map (comp ->sql :name))
+                                  (model-classes))
+                             (catch js/Error e
+                               (js/console.warn e "Error occurred generating model classes.")
+                               (throw e)))
+          db (try (new Database
+                       (clj->js
+                        {:adapter adapter
+                         :modelClasses model-classes
+                         :actionsEnabled true}))
+                  (catch js/Error e
+                    (js/console.warn e "Error occurred creating WatermelonDB instance.")
+                    (throw e)))]
+      (j/assoc! db :schemas (->> tables
+                                 (map (fn [{:keys [name schema]}]
+                                        (let [tx (mt/transformer mt/json-transformer cella-transformer)]
+                                          [name {:schema schema
+                                                 :encoder (m/encoder schema tx)
+                                                 :decoder (m/decoder schema tx)}])))
+                                 (into {})))
+      db)))
 
 (defn compile
   [database expr]
@@ -138,6 +146,11 @@
           expr))
 
 (defn run
+  [database expr]
+  (let [f (compile database expr)]
+    (f)))
+
+(defn run-action
   [database expr]
   (j/call database :action (compile database expr)
           #js {:toString #(pr-str {:cella/action expr})}))

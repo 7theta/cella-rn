@@ -19,7 +19,7 @@
    :cella/run
    (fn [{:keys [expr on-success on-error]}]
      (try (-> db-connection
-              (db/run expr)
+              (db/run-action expr)
               (j/call :then #(when on-success (dispatch (conj on-success %))))
               (j/call :catch #(when on-error (dispatch (conj on-error %)))))
           (catch js/Error e

@@ -15,18 +15,22 @@
             [malli.error :as me]
             [malli.transform :as mt]
             [malli.util :as mu]
+            [cljs.core.async :refer [go chan <! put! close!]]
             [tempus.core :as t]
             [inflections.core :as inflections]
             [utilis.map :refer [compact map-vals]]
             [utilis.js :as j]
             [integrant.core :as ig]
             [clojure.string :as st]
-            [goog.object :as gobj]))
+            [goog.object :as gobj]
+            [reagent.core :as r]
+            [reagent.ratom :refer [reaction]]
+            [re-frame.core :refer [reg-sub-raw]]))
 
 ;;; Declarations
 
 (declare model-class schema->columns ->sql sql-> encode decode cella-transformer with-registry date-schema connect
-         copy-fn check-js-support)
+         copy-fn check-js-support process-queue)
 
 (defn date?
   [x]
@@ -38,7 +42,13 @@
   [_ {:keys [db-name schema-version tables] :as opts}]
   (try (doseq [{:keys [message]} (remove :supported (check-js-support))]
          (js/console.warn message))
-       (connect opts)
+       (let [db (connect opts)]
+         (reg-sub-raw
+          :cella/queue-size
+          (fn []
+            (reaction
+             (count @(j/get db :action-queue)))))
+         db)
        (catch js/Error e
          (js/console.warn e)
          (throw e))))
@@ -70,20 +80,21 @@
                       {:schema schema
                        :dbName (->sql db-name)
                        :synchronous false}))
-        model-classes (doall (map (comp model-class ->sql :name) tables))
-        db (new Database
-                (clj->js
-                 {:adapter adapter
-                  :modelClasses model-classes
-                  :actionsEnabled true}))]
-    (j/assoc! db :schemas (->> tables
-                               (map (fn [{:keys [name schema]}]
-                                      (let [tx (mt/transformer mt/json-transformer cella-transformer)]
-                                        [name {:schema schema
-                                               :encoder (m/encoder schema tx)
-                                               :decoder (m/decoder schema tx)}])))
-                               (into {})))
-    db))
+        model-classes (doall (map (comp model-class ->sql :name) tables))]
+    (doto (new Database
+               (clj->js
+                {:adapter adapter
+                 :modelClasses model-classes
+                 :actionsEnabled true}))
+      (j/assoc! :schemas (->> tables
+                              (map (fn [{:keys [name schema]}]
+                                     (let [tx (mt/transformer mt/json-transformer cella-transformer)]
+                                       [name {:schema schema
+                                              :encoder (m/encoder schema tx)
+                                              :decoder (m/decoder schema tx)}])))
+                              (into {})))
+      (j/assoc! :action-queue (r/atom []))
+      (j/assoc! :has-processor (r/atom false)))))
 
 (defn compile
   [database expr]
@@ -133,16 +144,40 @@
                                              (j/call :then observe)
                                              (j/call :catch reject))
 
-                                         :else (reject (new js/Error "Unable to observe" result))))
+                                         :else (reject (new js/Error ":cella/connection - Unable to observe" result))))
                                      (catch js/Error e
                                        (reject e))))))))
           database
           expr))
 
+(defn run-action
+  [database expr]
+  (let [action-queue (j/get database :action-queue)
+        p-ch (chan)
+        p (new js/Promise
+               (fn [resolve reject]
+                 (put! p-ch {:resolve resolve :reject reject})))
+        done (fn [f result]
+               (go (try (let [{:keys [resolve reject]} (<! p-ch)]
+                          (case f
+                            :resolve (resolve result)
+                            :reject (reject result)))
+                        (close! p-ch)
+                        (catch js/Error e
+                          (js/console.error ":cella/connection - Error occurred in resolve go block" e)))))]
+    (swap! action-queue conj
+           {:action (compile database expr)
+            :resolve (fn [result] (done :resolve result))
+            :reject (fn [error] (done :reject error))})
+    (when (not @(j/get database :has-processor))
+      (js/console.log "starting queue processor")
+      (reset! (j/get database :has-processor) true)
+      (process-queue database))
+    p))
+
 (defn run
   [database expr]
-  (j/call database :action (compile database expr)
-          #js {:toString #(pr-str {:cella/action expr})}))
+  ((compile database expr)))
 
 ;;; Implementation
 
@@ -203,7 +238,7 @@
 (defn decode
   [context value]
   (cond
-    (js/Array.isArray value) (map (partial decode context) (js->clj value))
+    (js/Array.isArray value) (mapv (partial decode context) (js->clj value))
     (j/get value :_raw) (-> context
                             (assoc :table (sql-> (j/get-in value [:collection :table])))
                             (decode (js->clj (j/get value :_raw))))
@@ -287,7 +322,7 @@
                     (keyword? type) type
                     (or (fn? type) (symbol? type)) (get symbol->keyword type)
                     :else (throw (ex-info "Unhandled type" {:type type}))))
-        (throw (new js/Error (str "Could not resolve type to one of string, boolean or number: "
+        (throw (new js/Error (str ":cella/connection - Could not resolve type to one of string, boolean or number: "
                                   {:type type}))))))
 
 (defn schema->columns
@@ -367,7 +402,21 @@
 (defn check-js-support
   []
   [{:name :reflect
-    :message "No support for 'js/Reflect' found. WatermelonDB relies on this property, and it must be polyfilled, or a version of js used that supports it."
+    :message ":cella/connection - No support for 'js/Reflect' found. WatermelonDB relies on this property, and it must be polyfilled, or a version of js used that supports it."
     :supported (try js/Reflect true
                     (catch js/Error e
                       false))}])
+
+(defn process-queue
+  [database]
+  (let [action-queue (j/get database :action-queue)
+        {:keys [action resolve reject]} (first @action-queue)]
+    (if action
+      (do (swap! action-queue (comp vec rest))
+          (try (-> database
+                   (j/call :action action #js {:toString #(pr-str {:cella/action action})})
+                   (j/call :then (fn [result] (resolve result) (process-queue database)))
+                   (j/call :catch (fn [error] (reject error) (process-queue database))))
+               (catch js/Error e
+                 (reject e))))
+      (reset! (j/get database :has-processor) false))))

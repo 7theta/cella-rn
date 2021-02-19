@@ -141,10 +141,6 @@
 
 (defn run
   [database expr]
-  ((compile database expr)))
-
-(defn run-action
-  [database expr]
   (j/call database :action (compile database expr)
           #js {:toString #(pr-str {:cella/action expr})}))
 

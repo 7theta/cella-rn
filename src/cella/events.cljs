@@ -29,19 +29,4 @@
    (fn [_ [_ expr {:keys [on-success on-error]}]]
      {:cella/run {:expr expr
                   :on-success on-success
-                  :on-error on-error}}))
-  (reg-fx
-   :cella/run-action
-   (fn [{:keys [expr on-success on-error]}]
-     (try (-> db-connection
-              (db/run-action expr)
-              (j/call :then #(when on-success (dispatch (conj on-success %))))
-              (j/call :catch #(when on-error (dispatch (conj on-error %)))))
-          (catch js/Error e
-            (js/console.warn e)))))
-  (reg-event-fx
-   :cella/run-action
-   (fn [_ [_ expr {:keys [on-success on-error]}]]
-     {:cella/run-action {:expr expr
-                         :on-success on-success
-                         :on-error on-error}})))
+                  :on-error on-error}})))

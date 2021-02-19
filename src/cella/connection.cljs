@@ -129,11 +129,21 @@
                                 (try (let [result (if (fn? result) (result) result)
                                            observe (fn [observable]
                                                      (let [observable (j/call observable :observe)
-                                                           decode (partial decode {:schemas (j/get database :schemas)})]
+                                                           decode (partial decode {:schemas (j/get database :schemas)})
+                                                           t (atom nil)
+                                                           timeout-ms 100
+                                                           debounce (fn [f result]
+                                                                      (when-let [t @t] (js/clearTimeout t))
+                                                                      (reset! t (js/setTimeout
+                                                                                 (fn []
+                                                                                   (f result)
+                                                                                   (reset! t nil))
+                                                                                 timeout-ms)))]
                                                        (j/assoc! observable ":cella/subscribe"
                                                                  (fn [f]
-                                                                   (j/call observable :subscribe
-                                                                           (comp f decode))))
+                                                                   (let [f (comp f decode)]
+                                                                     (j/call observable :subscribe
+                                                                             (partial debounce f)))))
                                                        (resolve observable)))]
                                        (cond
                                          (j/get result :observe)

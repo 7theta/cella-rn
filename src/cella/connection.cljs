@@ -180,7 +180,6 @@
             :resolve (fn [result] (done :resolve result))
             :reject (fn [error] (done :reject error))})
     (when (not @(j/get database :has-processor))
-      (js/console.log "starting queue processor")
       (reset! (j/get database :has-processor) true)
       (process-queue database))
     p))

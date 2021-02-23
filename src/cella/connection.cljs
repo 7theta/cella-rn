@@ -9,7 +9,7 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns cella.connection
-  (:require ["@nozbe/watermelondb" :as db :refer [appSchema tableSchema Database Model]]
+  (:require ["@nozbe/watermelondb" :as db :refer [appSchema tableSchema Database Model Q]]
             ["@nozbe/watermelondb/adapters/sqlite" :default SQLiteAdapter]
             [malli.core :as m]
             [malli.error :as me]
@@ -98,7 +98,7 @@
 
 (defn compile
   [database expr]
-  (reduce (fn [result [op & args]]
+  (reduce (fn [result [op & args :as expr-inner]]
             (condp = op
               :table (j/call result :get (->sql (first args)))
               :create (let [copy-fns (map (partial copy-fn database (j/get result :table)) args)]
@@ -119,6 +119,56 @@
               :query (->> args
                           (map (partial compile database))
                           (apply j/call result :query))
+              :where (if (not (sequential? (first args)))
+                       (throw (js/Error.
+                               (str ":cella/connection - First argument to ':where' operator must be a sequence of arguments"
+                                    (pr-str {:args args}))))
+                       (let [[where-op key & where-args :as where] (first args)]
+                         (condp = where-op
+                           :eq (j/call Q :where
+                                       (->sql key)
+                                       (j/call Q :eq (first where-args)))
+                           :not-eq (j/call Q :where
+                                           (->sql key)
+                                           (j/call Q :notEq (first where-args)))
+                           :gt (j/call Q :where
+                                       (->sql key)
+                                       (j/call Q :gt (first where-args)))
+                           :gte (j/call Q :where
+                                        (->sql key)
+                                        (j/call Q :gte (first where-args)))
+                           :weak-gt (j/call Q :where
+                                            (->sql key)
+                                            (j/call Q :weakGt (first where-args)))
+                           :lt (j/call Q :where
+                                       (->sql key)
+                                       (j/call Q :lt (first where-args)))
+                           :lte (j/call Q :where
+                                        (->sql key)
+                                        (j/call Q :lte (first where-args)))
+                           :between (j/call Q :where
+                                            (->sql key)
+                                            (j/call Q :between #js [(first where-args)
+                                                                    (second where-args)]))
+                           :one-of (j/call Q :where
+                                           (->sql key)
+                                           (j/call Q :oneOf (clj->js where-args)))
+                           :not-in (j/call Q :where
+                                           (->sql key)
+                                           (j/call Q :notIn (clj->js where-args)))
+                           :like (j/call Q :where
+                                         (->sql key)
+                                         (j/call Q :like
+                                                 (j/call Q :sanitizeLikeString
+                                                         (first where-args))))
+                           :not-like (j/call Q :where
+                                             (->sql key)
+                                             (j/call Q :notLike
+                                                     (j/call Q :sanitizeLikeString
+                                                             (first where-args))))
+                           (throw (js/Error.
+                                   (str ":cella/connection - Unrecognized Q.where operator: "
+                                        (pr-str {:where where})))))))
               :fetch (fn []
                        (-> result
                            (j/call :fetch)
@@ -127,6 +177,7 @@
                          (new js/Promise
                               (fn [resolve reject]
                                 (try (let [result (if (fn? result) (result) result)
+                                           table (j/get-in result [:collection :modelClass :table])
                                            observe (fn [observable]
                                                      (let [observable (j/call observable :observe)
                                                            decode (partial decode {:schemas (j/get database :schemas)})
@@ -156,37 +207,47 @@
 
                                          :else (reject (new js/Error ":cella/connection - Unable to observe" result))))
                                      (catch js/Error e
-                                       (reject e))))))))
+                                       (reject e))))))
+              (throw (js/Error.
+                      (str ":cella/connection - Unrecognized operation encountered when compiling expression: "
+                           (pr-str {:outer expr
+                                    :inner expr-inner}))))))
           database
           expr))
 
 (defn run-action
   [database expr]
-  (let [action-queue (j/get database :action-queue)
-        p-ch (chan)
-        p (new js/Promise
-               (fn [resolve reject]
-                 (put! p-ch {:resolve resolve :reject reject})))
-        done (fn [f result]
-               (go (try (let [{:keys [resolve reject]} (<! p-ch)]
-                          (case f
-                            :resolve (resolve result)
-                            :reject (reject result)))
-                        (close! p-ch)
-                        (catch js/Error e
-                          (js/console.error ":cella/connection - Error occurred in resolve go block" e)))))]
-    (swap! action-queue conj
-           {:action (compile database expr)
-            :resolve (fn [result] (done :resolve result))
-            :reject (fn [error] (done :reject error))})
-    (when (not @(j/get database :has-processor))
-      (reset! (j/get database :has-processor) true)
-      (process-queue database))
-    p))
+  (try (let [action-queue (j/get database :action-queue)
+             p-ch (chan)
+             p (new js/Promise
+                    (fn [resolve reject]
+                      (put! p-ch {:resolve resolve :reject reject})))
+             done (fn [f result]
+                    (go (try (let [{:keys [resolve reject]} (<! p-ch)]
+                               (case f
+                                 :resolve (resolve result)
+                                 :reject (reject result)))
+                             (close! p-ch)
+                             (catch js/Error e
+                               (js/console.error ":cella/connection - Error occurred in resolve go block" e)))))]
+         (swap! action-queue conj
+                {:action (compile database expr)
+                 :resolve (fn [result] (done :resolve result))
+                 :reject (fn [error] (done :reject error))})
+         (when (not @(j/get database :has-processor))
+           (reset! (j/get database :has-processor) true)
+           (process-queue database))
+         p)
+       (catch js/Error e
+         (js/console.warn e)
+         (throw e))))
 
 (defn run
   [database expr]
-  ((compile database expr)))
+  (try ((compile database expr))
+       (catch js/Error e
+         (js/console.warn e)
+         (throw e))))
 
 ;;; Implementation
 
@@ -247,20 +308,42 @@
 (defn decode
   [context value]
   (cond
-    (js/Array.isArray value) (mapv (partial decode context) (js->clj value))
+    (js/Array.isArray value) (let [length (j/get value :length)]
+                               (loop [result (transient [])
+                                      i 0]
+                                 (if (< i length)
+                                   (recur (->> (aget value i)
+                                               (decode context)
+                                               (conj! result))
+                                          (inc i))
+                                   (persistent! result))))
     (j/get value :_raw) (-> context
                             (assoc :table (sql-> (j/get-in value [:collection :table])))
-                            (decode (js->clj (j/get value :_raw))))
-    (map? value) (let [{:keys [decoder]} (get-in context [:schemas (get context :table)])]
-                   (->> value
-                        (map (fn [[k value]]
-                               (when (not (#{"_status" "_changed"} k))
-                                 [(decode-ks k) value])))
-                        (remove nil?)
-                        (reduce (fn [m [ks value]]
-                                  (assoc-in m ks value))
-                                {})
-                        (decoder)))
+                            (decode (j/get value :_raw)))
+    (object? value) (let [decoder (get-in context [:schemas (get context :table) :decoder])
+                          object-keys (js/Object.keys value)
+                          length (j/get object-keys :length)
+                          assoc-in-ks (atom [])
+                          result (decoder
+                                  (loop [result (transient {})
+                                         i 0]
+                                    (if (< i length)
+                                      (let [k (aget object-keys i)]
+                                        (recur (if (or (= "_status" k)
+                                                       (= "_changed" k))
+                                                 result
+                                                 (let [ks (decode-ks k)]
+                                                   (if (= 1 (count ks))
+                                                     (assoc! result (first ks) (j/get value k))
+                                                     (swap! assoc-in-ks conj [ks (j/get value k)]))))
+                                               (inc i)))
+                                      (persistent! result))))]
+                      (if-let [assoc-in-ks (not-empty @assoc-in-ks)]
+                        (reduce (fn [result [ks value]]
+                                  (assoc-in result ks value))
+                                result
+                                assoc-in-ks)
+                        result))
     :else value))
 
 (def symbol->keyword

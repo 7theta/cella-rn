@@ -437,8 +437,8 @@
 (defn cella-transformer []
   (mt/transformer
    {:name :string
-    :decoders {:date (partial t/from :edn)}
-    :encoders {:date (partial t/into :edn)}}))
+    :decoders {:date (partial t/from :long)}
+    :encoders {:date (partial t/into :long)}}))
 
 (defn with-registry
   [schema registry]

@@ -20,6 +20,7 @@
             [inflections.core :as inflections]
             [utilis.map :refer [compact map-vals]]
             [utilis.js :as j]
+            [utilis.fn :refer [fsafe]]
             [integrant.core :as ig]
             [clojure.string :as st]
             [goog.object :as gobj]
@@ -90,6 +91,14 @@
                               (map (fn [{:keys [name schema]}]
                                      (let [tx (mt/transformer mt/json-transformer cella-transformer)]
                                        [name {:schema schema
+                                              :schema-keys (->> (m/form schema)
+                                                                (rest)
+                                                                (map (fn [[k & args]]
+                                                                       (let [{:keys [optional]} (when (= 2 (count args))
+                                                                                                  (first args))]
+                                                                         [k {:optional (boolean optional)
+                                                                             :type (last args)}])))
+                                                                (into {}))
                                               :encoder (m/encoder schema tx)
                                               :decoder (m/decoder schema tx)}])))
                               (into {})))
@@ -290,15 +299,16 @@
 
 (defn encode
   [context value]
+
   (cond
     (map? value)
     (let [{:keys [schemas table]} context
           {:keys [encoder schema]} (get schemas table)
-          value (encoder value)]
-      (->> value
+          encoded (encoder value)]
+      (->> encoded
            (key-paths)
-           (filter (partial leaf? value))
-           (map (fn [ks] [(encode-ks ks) (encode context (get-in value ks))]))
+           (filter (partial leaf? encoded))
+           (map (fn [ks] [(encode-ks ks) (encode context (get-in encoded ks))]))
            (into {})))
 
     (keyword? value) (name value)
@@ -320,7 +330,7 @@
     (j/get value :_raw) (-> context
                             (assoc :table (sql-> (j/get-in value [:collection :table])))
                             (decode (j/get value :_raw)))
-    (object? value) (let [decoder (get-in context [:schemas (get context :table) :decoder])
+    (object? value) (let [{:keys [schema-keys decoder]} (get-in context [:schemas (get context :table)])
                           object-keys (js/Object.keys value)
                           length (j/get object-keys :length)
                           assoc-in-ks (atom [])
@@ -332,10 +342,26 @@
                                         (recur (if (or (= "_status" k)
                                                        (= "_changed" k))
                                                  result
-                                                 (let [ks (decode-ks k)]
-                                                   (if (= 1 (count ks))
-                                                     (assoc! result (first ks) (j/get value k))
-                                                     (swap! assoc-in-ks conj [ks (j/get value k)]))))
+                                                 (let [ks (decode-ks k)
+                                                       v (j/get value k)
+                                                       {:keys [optional type]} (if (= (count ks) 1)
+                                                                                 (get schema-keys (first ks))
+                                                                                 (get-in schema-keys ks))
+                                                       empty-value? (and optional
+                                                                         (or (and (= type :string)
+                                                                                  (string? v)
+                                                                                  (empty? v))
+                                                                             (and (= type :keyword)
+                                                                                  (string? v)
+                                                                                  (empty? v))
+                                                                             (and (= type :date)
+                                                                                  (number? v)
+                                                                                  (zero? v))))]
+                                                   (if empty-value?
+                                                     result
+                                                     (if (= 1 (count ks))
+                                                       (assoc! result (first ks) v)
+                                                       (swap! assoc-in-ks conj [ks v])))))
                                                (inc i)))
                                       (persistent! result))))]
                       (if-let [assoc-in-ks (not-empty @assoc-in-ks)]

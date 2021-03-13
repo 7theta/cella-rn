@@ -15,6 +15,7 @@
             [malli.error :as me]
             [malli.transform :as mt]
             [malli.util :as mu]
+            [cljs.reader :refer [read-string]]
             [cljs.core.async :refer [go chan <! put! close!]]
             [tempus.core :as t]
             [inflections.core :as inflections]
@@ -299,7 +300,6 @@
 
 (defn encode
   [context value]
-
   (cond
     (map? value)
     (let [{:keys [schemas table]} context
@@ -436,7 +436,7 @@
   [schema]
   (let [type (m/type schema)]
     (or (sql-type (cond
-                    (= :sequential type) (resolve-type (last (m/form schema)))
+                    (= :sequential type) :string
                     (keyword? type) type
                     (or (fn? type) (symbol? type)) (get symbol->keyword type)
                     :else (throw (ex-info "Unhandled type" {:type type}))))
@@ -463,8 +463,12 @@
 (defn cella-transformer []
   (mt/transformer
    {:name :string
-    :decoders {:date (partial t/from :long)}
-    :encoders {:date (partial t/into :long)}}))
+    :decoders {:sequential read-string
+               :vector read-string
+               :date (partial t/from :long)}
+    :encoders {:sequential pr-str
+               :vector pr-str
+               :date (partial t/into :long)}}))
 
 (defn with-registry
   [schema registry]

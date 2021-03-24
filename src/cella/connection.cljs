@@ -11,6 +11,7 @@
 (ns cella.connection
   (:require ["@nozbe/watermelondb" :as db :refer [appSchema tableSchema Database Model Q]]
             ["@nozbe/watermelondb/adapters/sqlite" :default SQLiteAdapter]
+            [clojure.walk :refer [postwalk]]
             [malli.core :as m]
             [malli.error :as me]
             [malli.transform :as mt]
@@ -460,14 +461,32 @@
               {:name (encode-ks ks)
                :type type}))))
 
+(defn decode-seq
+  [sq]
+  (->> sq
+       read-string
+       (postwalk (fn [value]
+                   (if (instance? js/Date value)
+                     (t/from :long (j/call value :getTime))
+                     value)))))
+
+(defn encode-seq
+  [sq]
+  (->> sq
+       (postwalk (fn [value]
+                   (if (date? value)
+                     (:date-time value)
+                     value)))
+       (pr-str)))
+
 (defn cella-transformer []
   (mt/transformer
    {:name :string
-    :decoders {:sequential read-string
-               :vector read-string
+    :decoders {:sequential decode-seq
+               :vector decode-seq
                :date (partial t/from :long)}
-    :encoders {:sequential pr-str
-               :vector pr-str
+    :encoders {:sequential encode-seq
+               :vector encode-seq
                :date (partial t/into :long)}}))
 
 (defn with-registry

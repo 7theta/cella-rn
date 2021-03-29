@@ -11,6 +11,7 @@
 (ns cella.connection
   (:require ["@nozbe/watermelondb" :as db :refer [appSchema tableSchema Database Model Q]]
             ["@nozbe/watermelondb/adapters/sqlite" :default SQLiteAdapter]
+            ["@nozbe/watermelondb/Schema/migrations" :refer [schemaMigrations createTable addColumns]]
             [clojure.walk :refer [postwalk]]
             [malli.core :as m]
             [malli.error :as me]
@@ -32,17 +33,22 @@
 
 ;;; Declarations
 
-(declare model-class schema->columns ->sql sql-> encode decode cella-transformer with-registry date-schema connect
+(declare model-class schema->columns ->sql sql-> encode decode cella-transformer connect
          copy-fn check-js-support process-queue)
 
 (defn date?
   [x]
   (instance? t/DateTime x))
 
+(def date-schema (m/-simple-schema {:type :date :pred date?}))
+
+(def schema-registry
+  (merge (m/default-schemas) {:date date-schema}))
+
 ;;; Integrant
 
 (defmethod ig/init-key :cella/connection
-  [_ {:keys [db-name schema-version tables] :as opts}]
+  [_ {:keys [db-name schema-version tables migrations] :as opts}]
   (try (doseq [{:keys [message]} (remove :supported (check-js-support))]
          (js/console.warn message))
        (let [db (connect opts)]
@@ -62,50 +68,80 @@
 ;;; Public
 
 (defn connect
-  [{:keys [db-name schema-version tables]
+  [{:keys [db-name schema-version tables migrations]
     :or {schema-version 1}}]
-  (let [tables (doall
-                (map (fn [table]
-                       (update table :schema
-                               m/schema {:registry (merge (m/default-schemas) {:date (date-schema)})}))
-                     tables))
-        schema (appSchema
-                (clj->js
-                 {:version schema-version
-                  :tables (map (fn [{:keys [name schema]}]
-                                 (tableSchema
-                                  (clj->js
-                                   {:name (->sql name)
-                                    :columns (schema->columns schema)})))
-                               tables)}))
-        adapter (new SQLiteAdapter
+  (try (let [migrations (when (seq migrations)
+                          (schemaMigrations
+                           (clj->js
+                            {:migrations
+                             (map (fn [{:keys [to-version steps]}]
+                                    {:toVersion to-version
+                                     :steps (map (fn [[action options]]
+                                                   (condp = action
+                                                     :create-table (let [{:keys [name schema]} options]
+                                                                     (createTable
+                                                                      (clj->js {:name (->sql name)
+                                                                                :columns (-> schema
+                                                                                             (m/schema {:registry schema-registry})
+                                                                                             (schema->columns))})))
+                                                     :add-columns (let [{:keys [table schema]} options]
+                                                                    (addColumns
+                                                                     (clj->js {:table (->sql name)
+                                                                               :columns (-> schema
+                                                                                            (m/schema {:registry schema-registry})
+                                                                                            (schema->columns))})))
+                                                     (throw (ex-info "Unrecognized action, must be one of :create-table, :add-columns"
+                                                                     {:action action
+                                                                      :options options}))))
+                                                 steps)})
+                                  migrations)})))
+             tables (doall
+                     (map (fn [table]
+                            (update table :schema m/schema {:registry schema-registry}))
+                          tables))
+             schema (appSchema
                      (clj->js
-                      {:schema schema
-                       :dbName (->sql db-name)
-                       :synchronous false}))
-        model-classes (doall (map (comp model-class ->sql :name) tables))]
-    (doto (new Database
-               (clj->js
-                {:adapter adapter
-                 :modelClasses model-classes
-                 :actionsEnabled true}))
-      (j/assoc! :schemas (->> tables
-                              (map (fn [{:keys [name schema]}]
-                                     (let [tx (mt/transformer mt/json-transformer cella-transformer)]
-                                       [name {:schema schema
-                                              :schema-keys (->> (m/form schema)
-                                                                (rest)
-                                                                (map (fn [[k & args]]
-                                                                       (let [{:keys [optional]} (when (= 2 (count args))
-                                                                                                  (first args))]
-                                                                         [k {:optional (boolean optional)
-                                                                             :type (last args)}])))
-                                                                (into {}))
-                                              :encoder (m/encoder schema tx)
-                                              :decoder (m/decoder schema tx)}])))
-                              (into {})))
-      (j/assoc! :action-queue (r/atom []))
-      (j/assoc! :has-processor (r/atom false)))))
+                      {:version schema-version
+                       :tables (map (fn [{:keys [name schema]}]
+                                      (tableSchema
+                                       (clj->js
+                                        {:name (->sql name)
+                                         :columns (schema->columns schema)})))
+                                    tables)}))
+             adapter (new SQLiteAdapter
+                          (clj->js
+                           (merge
+                            (when migrations
+                              {:migrations migrations})
+                            {:schema schema
+                             :dbName (->sql db-name)
+                             :synchronous false})))
+             model-classes (doall (map (comp model-class ->sql :name) tables))]
+         (doto (new Database
+                    (clj->js
+                     {:adapter adapter
+                      :modelClasses model-classes
+                      :actionsEnabled true}))
+           (j/assoc! :schemas (->> tables
+                                   (map (fn [{:keys [name schema]}]
+                                          (let [tx (mt/transformer mt/json-transformer cella-transformer)]
+                                            [name {:schema schema
+                                                   :schema-keys (->> (m/form schema)
+                                                                     (rest)
+                                                                     (map (fn [[k & args]]
+                                                                            (let [{:keys [optional]} (when (= 2 (count args))
+                                                                                                       (first args))]
+                                                                              [k {:optional (boolean optional)
+                                                                                  :type (last args)}])))
+                                                                     (into {}))
+                                                   :encoder (m/encoder schema tx)
+                                                   :decoder (m/decoder schema tx)}])))
+                                   (into {})))
+           (j/assoc! :action-queue (r/atom []))
+           (j/assoc! :has-processor (r/atom false))))
+       (catch js/Error e
+         (js/console.warn e)
+         (throw e))))
 
 (defn compile
   [database expr]
@@ -446,20 +482,29 @@
 
 (defn schema->columns
   [schema]
-  (->> (m/walk schema (fn [schema properties children options]
-                        (let [type (resolve-type schema)]
-                          (compact
-                           {:type type
-                            :children (when (= type :map) children)}))))
-       :children
-       (mapcat (fn flatten-children [[key _ {:keys [type children]}]]
-                 (if (seq children)
-                   (binding [*parent-ks* (conj (vec *parent-ks*) key)]
-                     (mapcat flatten-children children))
-                   [{:ks (conj (vec *parent-ks*) key) :type type}])))
-       (map (fn [{:keys [ks type]}]
-              {:name (encode-ks ks)
-               :type type}))))
+  (let [options (->> (m/form schema)
+                     (rest)
+                     (filter (comp (partial = 3) count))
+                     (map (fn [[k options & _]] [k options]))
+                     (into {}))]
+    (->> (m/walk schema (fn [schema _ children options]
+                          (let [type (resolve-type schema)]
+                            (compact
+                             {:type type
+                              :children (when (= type :map) children)}))))
+         :children
+         (mapcat (fn flatten-children [[key _ {:keys [type children]}]]
+                   (if (seq children)
+                     (binding [*parent-ks* (conj (vec *parent-ks*) key)]
+                       (mapcat flatten-children children))
+                     [{:ks (conj (vec *parent-ks*) key) :type type}])))
+         (map (fn [{:keys [ks type]}]
+                (let [{:keys [optional]} (get-in options ks)]
+                  (merge
+                   (when optional
+                     {:isOptional true})
+                   {:name (encode-ks ks)
+                    :type type})))))))
 
 (defn decode-seq
   [sq]
@@ -488,16 +533,6 @@
     :encoders {:sequential encode-seq
                :vector encode-seq
                :date (partial t/into :long)}}))
-
-(defn with-registry
-  [schema registry]
-  (mu/update-properties schema assoc :registry registry))
-
-(defn date-schema
-  []
-  (m/-simple-schema
-   {:type :date
-    :pred date?}))
 
 (defn copy-fn
   [database table row]

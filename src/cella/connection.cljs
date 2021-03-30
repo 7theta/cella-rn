@@ -86,7 +86,7 @@
                                                                                              (schema->columns))})))
                                                      :add-columns (let [{:keys [table schema]} options]
                                                                     (addColumns
-                                                                     (clj->js {:table (->sql name)
+                                                                     (clj->js {:table (->sql table)
                                                                                :columns (-> schema
                                                                                             (m/schema {:registry schema-registry})
                                                                                             (schema->columns))})))

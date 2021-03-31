@@ -385,7 +385,8 @@
                                                                                  (get schema-keys (first ks))
                                                                                  (get-in schema-keys ks))
                                                        empty-value? (and optional
-                                                                         (or (and (= type :string)
+                                                                         (or (nil? v)
+                                                                             (and (= type :string)
                                                                                   (string? v)
                                                                                   (empty? v))
                                                                              (and (= type :keyword)

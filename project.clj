@@ -8,8 +8,8 @@
 ;;   the terms of this license.
 ;;   You must not remove this notice, or any others, from this software.
 
-(defproject com.7theta/cella-rn "0.4.2"
-  :description "A library to wrap React Native Async Storage"
+(defproject com.7theta/cella-rn "0.5.0"
+  :description "ReactNative reactive storage with a re-frame interface."
   :url "https://github.com7theta/cella-rn"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}

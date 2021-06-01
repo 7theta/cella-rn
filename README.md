@@ -35,12 +35,12 @@ re-frame integration
 ```clojure
 (:require [re-frame.core :as rf])
 
-@(rf/subscribe [[:cella/subscribe
-                 [[:table :users]]]])
+@(rf/subscribe [:cella/subscribe
+                [[:table :users]]])
 
-@(rf/subscribe [[:cella/subscribe
-                 [[:table :users]
-                  [:get "user/abc"]]]])
+@(rf/subscribe [:cella/subscribe
+                [[:table :users]
+                 [:get "user/abc"]]])
 
 (rf/dispatch
  [:cella/run

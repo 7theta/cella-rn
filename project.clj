@@ -8,20 +8,18 @@
 ;;   the terms of this license.
 ;;   You must not remove this notice, or any others, from this software.
 
-(defproject com.7theta/cella-rn "0.4.2"
-  :description "A library to wrap React Native Async Storage"
+(defproject com.7theta/cella-rn "0.5.0"
+  :description "ReactNative reactive storage with a re-frame interface."
   :url "https://github.com7theta/cella-rn"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
-  :dependencies [[re-frame "1.1.2"]
+  :dependencies [[re-frame "1.2.0"]
                  [inflections "0.13.2"]
                  [integrant "0.8.0"]
-                 [com.7theta/utilis "1.12.1"]
-                 [com.7theta/tempus "0.3.0"]
-                 [metosin/malli "0.2.1"]
-                 [borkdude/sci "0.2.3"]]
-  :profiles {:dev {:dependencies [[org.clojure/clojure "1.10.2"]
-                                  [org.clojure/clojurescript "1.10.773"]
+                 [com.7theta/utilis "1.12.2"]
+                 [com.7theta/tempus "0.3.1"]]
+  :profiles {:dev {:dependencies [[org.clojure/clojure "1.10.3"]
+                                  [org.clojure/clojurescript "1.10.866"]
                                   [integrant/repl "0.3.2"]]}}
   :scm {:name "git"
         :url "https://github.com/7theta/cella-rn"})

@@ -10,6 +10,56 @@
 Wrapper for [WatermelonDB](https://github.com/Nozbe/WatermelonDB) in
 React Native.
 
+## Usage
+
+Using the API directly with promises.
+
+```clojure
+(:require [cella.connection :as db])
+(def database (db/connect {:db-name "my-db-name"
+                           :tables [{:name "users"}]}))
+
+(-> database
+    (cella/run [[:table :users]
+                [:insert {:id "user/abc"}]])
+    (j/call :then #(js/console.log "added user/abc"))
+    (j/call :catch #(js/console.error "an error occurred" %)))
+
+(-> database
+    (cella/run [[:table :users]])
+    (j/call :then #(cljs.pprint/pprint {:users %})))
+```
+
+re-frame integration
+
+```clojure
+(:require [re-frame.core :as rf])
+
+@(rf/subscribe [[:cella/subscribe
+                 [[:table :users]]]])
+
+@(rf/subscribe [[:cella/subscribe
+                 [[:table :users]
+                  [:get "user/abc"]]]])
+
+(rf/dispatch
+ [:cella/run
+  [[:table :users]
+   [:insert {:id "user/abc"}]]])
+
+(rf/dispatch
+ [:cella/run
+  [[:table :users]
+   [:get "user/abc"]
+   [:update {:name "ABC"}]]])
+
+(rf/dispatch
+ [:cella/run
+  [[:table :users]
+   [:get "user/abc"]
+   [:delete]]])
+```
+
 ## Copyright and License
 
 Copyright © 2021 7theta

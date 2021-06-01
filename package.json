@@ -1,6 +1,6 @@
 {
     "dependencies": {
-        "@nozbe/watermelondb": "^0.20.0"
+        "@nozbe/watermelondb": "^0.22.0"
     },
     "devDependencies": {
         "shadow-cljs": "^2.8.39"

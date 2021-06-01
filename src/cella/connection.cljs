@@ -14,43 +14,25 @@
             ["@nozbe/watermelondb/adapters/sqlite" :default SQLiteAdapter]
             ["@nozbe/watermelondb/Schema/migrations" :refer [schemaMigrations createTable addColumns]]
             [cljs.core :refer [PersistentQueue]]
-            [clojure.walk :refer [postwalk]]
-            [malli.core :as m]
-            [malli.error :as me]
-            [malli.transform :as mt]
-            [malli.util :as mu]
-            [cljs.reader :refer [read-string]]
-            [cljs.core.async :refer [go chan <! put! close!]]
             [tempus.core :as t]
+            [tempus.duration :as td]
+            [tempus.transit :as tt]
+            [cognitect.transit :as transit]
             [inflections.core :as inflections]
             [utilis.map :refer [compact map-vals]]
             [utilis.js :as j]
             [utilis.fn :refer [fsafe]]
             [integrant.core :as ig]
             [clojure.string :as st]
-            [goog.object :as gobj]
             [reagent.core :as r]
             [reagent.ratom :as rr]
             [reagent.ratom :refer [reaction]]
             [re-frame.core :refer [reg-sub]]))
 
-;;; Declarations
-
-(defn date?
-  [x]
-  (instance? t/DateTime x))
-
-(def date-schema (m/-simple-schema {:type :date :pred date?}))
-
-(def schema-registry
-  (merge (m/default-schemas) {:date date-schema}))
-
 (declare connect check-js-support database process-queue compile compile-and-maybe-fetch wdb-> read?)
 
-;;; Integrant
-
 (defmethod ig/init-key :cella/connection
-  [_ {:keys [db-name schema-version tables] :as opts}]
+  [_ {:keys [db-name tables] :as opts}]
   (try (doseq [{:keys [message]} (remove :supported (check-js-support))]
          (js/console.warn message))
        (let [db (connect opts)]
@@ -63,11 +45,9 @@
          (js/console.warn e)
          (throw e))))
 
-;;; Public
-
 (defn connect
-  "Connect to a WatermelonDB instance where `db-name` is the database name, and the list of `tables`
-  each have both a `name` and a malli `schema` key."
+  "Connect to a WatermelonDB instance where `db-name` is the database name, and
+  each table in the list of `tables` has a `name`."
   [{:keys [db-name tables]}]
   (try (doto (database
               {:db-name db-name
@@ -186,11 +166,11 @@
 
 (defn encode
   [value]
-  (pr-str value))
+  (transit/write (transit/writer :json (:write tt/handlers)) value))
 
 (defn decode
-  [value]
-  (read-string value))
+  [^String data]
+  (transit/read (transit/reader :json (:read tt/handlers)) data))
 
 (defn table-schema
   [name columns]
@@ -223,18 +203,17 @@
 
 (defn database
   [{:keys [db-name tables]}]
-  (let [tables (map #(clojure.core/update % :schema m/schema {:registry schema-registry}) tables)]
-    (new Database
-         (clj->js
-          {:adapter (sqlite-adapter
-                     db-name
-                     (app-schema
-                      (map (fn [{:keys [name]}]
-                             {:name name
-                              :columns [{:name "value" :type :string}]})
-                           tables)))
-           :modelClasses (map (comp model-class ->sql :name) tables)
-           :actionsEnabled true}))))
+  (new Database
+       (clj->js
+        {:adapter (sqlite-adapter
+                   db-name
+                   (app-schema
+                    (map (fn [{:keys [name]}]
+                           {:name name
+                            :columns [{:name "value" :type :string}]})
+                         tables)))
+         :modelClasses (map (comp model-class ->sql :name) tables)
+         :actionsEnabled true})))
 
 (defn table
   [database table-name]

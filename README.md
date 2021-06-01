@@ -15,9 +15,10 @@ React Native.
 Using the API directly with promises.
 
 ```clojure
-(:require [cella.connection :as db])
-(def database (db/connect {:db-name "my-db-name"
-                           :tables [{:name "users"}]}))
+(:require [cella.connection :as cella])
+
+(def database (cella/connect {:db-name "my-db-name"
+                              :tables [{:name "users"}]}))
 
 (-> database
     (cella/run [[:table :users]

@@ -56,6 +56,12 @@ re-frame integration
 (rf/dispatch
  [:cella/run
   [[:table :users]
+   [:upsert {:id "user/abc"
+             :name "ABC_DEF"}]]])
+
+(rf/dispatch
+ [:cella/run
+  [[:table :users]
    [:get "user/abc"]
    [:delete]]])
 ```

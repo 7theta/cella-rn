@@ -23,7 +23,7 @@
               (j/call :then #(when on-success (dispatch (conj on-success %))))
               (j/call :catch #(when on-error (dispatch (conj on-error %)))))
           (catch js/Error e
-            (js/console.warn e)))))
+            (js/console.error e)))))
   (reg-event-fx
    :cella/run
    (fn [_ [_ expr {:keys [on-success on-error]}]]

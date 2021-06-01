@@ -16,42 +16,11 @@
             [utilis.js :as j]
             [utilis.fn :refer [fsafe]]))
 
-;;; Declarations
-
-(declare ensure-observable)
-
-;;; Integrant
-
 (defmethod ig/init-key :cella/subs [_ {:keys [db-connection]}]
-  (let [subscriptions (atom {})]
-    (rf/reg-sub-raw
-     :cella/subscribe
-     (fn [_ [_ expr]]
-       (let [a (rr/atom nil)
-             dispose (atom nil)
-             expr (ensure-observable expr)]
-         (-> db-connection
-             (db/run expr)
-             (j/call :then (fn [result]
-                             (cond
-                               (coll? result) (reset! a result)
-
-                               (j/get result ":cella/subscribe")
-                               (let [subscription (j/call result ":cella/subscribe" (partial reset! a))]
-                                 (reset! dispose (fn [] (j/call subscription :unsubscribe))))
-
-                               :else (js/console.warn "Unhandled subscribe value" result))))
-             (j/call :catch #(js/console.warn %)))
-         (rr/make-reaction (fn [] @a) :on-dispose #((fsafe @dispose))))))))
-
-(defmethod ig/halt-key! :cella/subs [_ _])
-
-;;; Implementation
-
-(defn- ensure-observable
-  [expr]
-  (condp = (first (last expr))
-    :observe expr
-    :fetch expr
-    :table (vec (concat expr [[:query] [:observe]]))
-    (conj (vec expr) [:observe])))
+  (rf/reg-sub-raw
+   :cella/subscribe
+   (fn [_ [_ expr]]
+     (let [a (db/observe db-connection expr)]
+       (rr/make-reaction
+        (fn [] @a)
+        :on-dispose #(db/dispose db-connection a))))))

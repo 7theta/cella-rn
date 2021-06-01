@@ -30,6 +30,7 @@
             [clojure.string :as st]
             [goog.object :as gobj]
             [reagent.core :as r]
+            [reagent.ratom :as rr]
             [reagent.ratom :refer [reaction]]
             [re-frame.core :refer [reg-sub]]))
 
@@ -44,7 +45,7 @@
 (def schema-registry
   (merge (m/default-schemas) {:date date-schema}))
 
-(declare connect check-js-support database process-queue compile wdb->)
+(declare connect check-js-support database process-queue compile compile-and-maybe-fetch wdb-> read?)
 
 ;;; Integrant
 
@@ -72,21 +73,15 @@
               {:db-name db-name
                :tables tables})
          (j/assoc! :action-queue (r/atom cljs.core/PersistentQueue.EMPTY))
-         (j/assoc! :action-queue-state (r/atom :idle)))
+         (j/assoc! :action-queue-state (r/atom :idle))
+         (j/assoc! :subscriptions (atom {})))
        (catch js/Error e
          (js/console.warn e)
          (throw e))))
 
 (defn run
   [database expr]
-  (js/Promise.
-   (fn [resolve reject]
-     (try (-> database
-              (compile expr)
-              (j/call :then (comp resolve wdb->))
-              (j/call :catch reject))
-          (catch js/Error e
-            (reject e))))))
+  (compile-and-maybe-fetch database expr))
 
 (defn run-action
   [database expr]
@@ -94,13 +89,36 @@
    (fn [resolve reject]
      (swap! (j/get database :action-queue) conj
             (fn [] (-> database
-                      (j/call :action #(compile database expr)
+                      (j/call :action #(compile-and-maybe-fetch database expr)
                               #js {:toString #(pr-str expr)})
-                      (j/call :then (comp resolve wdb->))
+                      (j/call :then resolve)
                       (j/call :catch reject))))
      (process-queue database))))
 
+(defn observe
+  [database expr]
+  (when (not (read? expr))
+    (throw (ex-info "Can only observe read expressions" {:expr expr})))
+  (let [a (r/atom nil)
+        subscription (-> database
+                         (compile expr)
+                         (j/call :observe)
+                         (j/call :subscribe (comp (partial reset! a) wdb->)))]
+    (swap! (j/get database :subscriptions) assoc a {:dispose #(j/call subscription :unsubscribe)})
+    a))
+
+(defn dispose
+  [database observable]
+  (let [subscriptions (j/get database :subscriptions)
+        {:keys [dispose]} (get @subscriptions observable)]
+    (dispose)
+    (swap! subscriptions dissoc observable)))
+
 ;;; Implementation
+
+(defn read?
+  [expr]
+  (#{:table :get} (first (last expr))))
 
 (defn process-queue*
   [database]
@@ -226,10 +244,6 @@
   [table id]
   (j/call table :find id))
 
-(defn fetch
-  [query]
-  (j/call query :fetch))
-
 (defn query
   [query]
   (j/call query :query))
@@ -284,9 +298,7 @@
 (defn compile
   [database expr]
   (let [expr (cond-> expr
-               (#{:table :get} (first (last expr)))
-               (-> (conj [:query])
-                   (conj [:fetch])))]
+               (read? expr) (conj [:query]))]
     (reduce (fn [result [op & args]]
               (case op
                 :table (table result (first args))
@@ -295,7 +307,6 @@
                 :update (update result (first args))
                 :upsert (upsert database result (first args))
                 :delete (delete result)
-                :fetch (fetch result)
                 :query (query result)
                 (throw (ex-info "Unable to compile expression"
                                 {:expr expr
@@ -303,6 +314,13 @@
                                  :args args}))))
             database
             expr)))
+
+(defn compile-and-maybe-fetch
+  [database expr]
+  (cond-> database
+    true (compile expr)
+    (read? expr) (j/call :fetch)
+    true (j/call :then wdb->)))
 
 (defn arr->seq
   [tx arr]

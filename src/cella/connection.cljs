@@ -9,7 +9,7 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns cella.connection
-  (:refer-clojure :exclude [update find])
+  (:refer-clojure :exclude [update find replace])
   (:require ["@nozbe/watermelondb" :as db :refer [appSchema tableSchema Database Model Q]]
             ["@nozbe/watermelondb/adapters/sqlite" :default SQLiteAdapter]
             ["@nozbe/watermelondb/Schema/migrations" :refer [schemaMigrations createTable addColumns]]
@@ -29,7 +29,7 @@
             [reagent.ratom :refer [reaction]]
             [re-frame.core :refer [reg-sub]]))
 
-(declare connect check-js-support database process-queue compile compile-and-maybe-fetch wdb-> read?)
+(declare connect check-js-support database process-queue compile compile-and-maybe-fetch wdb->)
 
 (defmethod ig/init-key :cella/connection
   [_ {:keys [db-name tables] :as opts}]
@@ -77,8 +77,6 @@
 
 (defn observe
   [database expr]
-  (when (not (read? expr))
-    (throw (ex-info "Can only observe read expressions" {:expr expr})))
   (let [a (r/atom nil)
         subscription (-> database
                          (compile expr)
@@ -95,10 +93,6 @@
     (swap! subscriptions dissoc observable)))
 
 ;;; Implementation
-
-(defn read?
-  [expr]
-  (#{:table :get} (first (last expr))))
 
 (defn process-queue*
   [database]
@@ -164,13 +158,16 @@
          prop (j/get props prop))))
     target))
 
+(def transit-writer (transit/writer :json {:handlers (:write tt/handlers)}))
+(def transit-reader (transit/reader :json {:handlers (:read tt/handlers)}))
+
 (defn encode
   [value]
-  (transit/write (transit/writer :json (:write tt/handlers)) value))
+  (transit/write transit-writer value))
 
 (defn decode
   [^String data]
-  (transit/read (transit/reader :json (:read tt/handlers)) data))
+  (transit/read transit-reader data))
 
 (defn table-schema
   [name columns]
@@ -221,7 +218,15 @@
 
 (defn find
   [table id]
-  (j/call table :find id))
+  (js/Promise.
+   (fn [resolve reject]
+     (-> table
+         (j/call :find id)
+         (j/call :then resolve)
+         (j/call :catch (fn [error]
+                          (if (re-find #"not found" (str error))
+                            (resolve nil)
+                            (reject error))))))))
 
 (defn query
   [query]
@@ -232,9 +237,9 @@
   (->> (cond
          (map? doc-or-docs) [doc-or-docs]
          (coll? doc-or-docs) (seq doc-or-docs)
-         :else (throw (ex-info "Must provide either a single document or collection of documents to :insert"
-                               {:table table
-                                :args doc-or-docs})))
+         :else (throw (js/Error. (str "Must provide either a single document or collection of documents to :insert"
+                                      {:table table
+                                       :args doc-or-docs}))))
        (map (fn [doc]
               (j/call table :prepareCreate
                       (fn [obj]
@@ -244,10 +249,12 @@
        clj->js
        (j/call database :batch)))
 
+(defn deleted?
+  [obj]
+  (boolean (and obj (= "deleted" (j/get-in obj [:_raw :_status])))))
+
 (defn update*
   [obj doc]
-  (when (= "deleted" (j/get-in obj [:_raw :_status]))
-    (throw (ex-info "Record not found" {:id (j/get-in obj [:_raw :_id])})))
   (->> (-> (j/get-in obj [:_raw :value])
            decode
            (merge (dissoc doc :id))
@@ -264,20 +271,36 @@
    (fn [resolve reject]
      (-> table
          (find (:id doc))
-         (j/call :then #(resolve (j/call % :update (fn [obj] (update* obj doc)))))
-         (j/call :catch (fn [error]
-                          (if (re-find #"not found" (str error))
-                            (resolve (insert database table doc))
-                            (reject error))))))))
+         (j/call :then #(resolve
+                         (if (and % (not (deleted? %)))
+                           (j/call % :update (fn [obj] (update* obj doc)))
+                           (insert database table doc))))
+         (j/call :catch reject)))))
+
+(defn replace*
+  [obj doc]
+  (j/assoc-in! obj [:_raw :value] (encode (dissoc doc :id))))
+
+(defn replace
+  [database table doc]
+  (js/Promise.
+   (fn [resolve reject]
+     (-> table
+         (find (:id doc))
+         (j/call :then #(resolve
+                         (if (and % (not (deleted? %)))
+                           (j/call % :update (fn [obj] (replace* obj doc)))
+                           (insert database table doc))))
+         (j/call :catch reject)))))
 
 (defn delete
   [obj]
-  (j/call obj :then #(j/call % :markAsDeleted)))
+  (j/call obj :then #(j/call % :destroyPermanently)))
 
 (defn compile
   [database expr]
   (let [expr (cond-> expr
-               (read? expr) (conj [:query]))]
+               (= :table (first (last expr))) (conj [:query]))]
     (reduce (fn [result [op & args]]
               (case op
                 :table (table result (first args))
@@ -285,12 +308,13 @@
                 :insert (insert database result (first args))
                 :update (update result (first args))
                 :upsert (upsert database result (first args))
+                :replace (replace database result (first args))
                 :delete (delete result)
                 :query (query result)
-                (throw (ex-info "Unable to compile expression"
-                                {:expr expr
-                                 :op op
-                                 :args args}))))
+                (throw (js/Error. (str "Unable to compile expression"
+                                       {:expr expr
+                                        :op op
+                                        :args args})))))
             database
             expr)))
 
@@ -298,7 +322,7 @@
   [database expr]
   (cond-> database
     true (compile expr)
-    (read? expr) (j/call :fetch)
+    (= :table (first (last expr))) (j/call :fetch)
     true (j/call :then wdb->)))
 
 (defn arr->seq

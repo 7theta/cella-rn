@@ -8,7 +8,7 @@
 ;;   the terms of this license.
 ;;   You must not remove this notice, or any others, from this software.
 
-(defproject com.7theta/cella-rn "0.5.0"
+(defproject com.7theta/cella-rn "0.6.0"
   :description "ReactNative reactive storage with a re-frame interface."
   :url "https://github.com7theta/cella-rn"
   :license {:name "Eclipse Public License"
@@ -17,7 +17,7 @@
                  [inflections "0.13.2"]
                  [integrant "0.8.0"]
                  [com.7theta/utilis "1.12.2"]
-                 [com.7theta/tempus "0.3.1"]]
+                 [com.7theta/tempus "0.3.2"]]
   :profiles {:dev {:dependencies [[org.clojure/clojure "1.10.3"]
                                   [org.clojure/clojurescript "1.10.866"]
                                   [integrant/repl "0.3.2"]]}}

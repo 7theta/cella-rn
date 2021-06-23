@@ -29,7 +29,9 @@
             [reagent.ratom :refer [reaction]]
             [re-frame.core :refer [reg-sub]]))
 
-(declare connect check-js-support database process-queue compile compile-and-maybe-fetch wdb->)
+(declare connect database wdb-> process-queue check-js-support
+         compile compile-and-maybe-fetch
+         correct-expr table-expr? promise?)
 
 (defmethod ig/init-key :cella/connection
   [_ {:keys [db-name tables] :as opts}]
@@ -78,19 +80,29 @@
 (defn observe
   [database expr]
   (let [a (r/atom nil)
-        subscription (-> database
-                         (compile expr)
-                         (j/call :observe)
-                         (j/call :subscribe (comp (partial reset! a) wdb->)))]
-    (swap! (j/get database :subscriptions) assoc a {:dispose #(j/call subscription :unsubscribe)})
+        expr (correct-expr expr)
+        compiled (compile database expr)
+        subscribe (fn [compiled]
+                    (js/Promise.
+                     (fn [resolve _]
+                       (if compiled
+                         (let [subscription (-> compiled
+                                                (j/call :observe)
+                                                (j/call :subscribe (comp (partial reset! a) wdb->)))]
+                           (resolve #(j/call subscription :unsubscribe)))
+                         (resolve (constantly true))))))]
+    (swap! (j/get database :subscriptions)
+           assoc a {:dispose (if (promise? compiled)
+                               (j/call compiled :then subscribe)
+                               (subscribe compiled))})
     a))
 
 (defn dispose
   [database observable]
-  (let [subscriptions (j/get database :subscriptions)
-        {:keys [dispose]} (get @subscriptions observable)]
-    (dispose)
-    (swap! subscriptions dissoc observable)))
+  (let [subscriptions (j/get database :subscriptions)]
+    (when-let [{:keys [dispose]} (get @subscriptions observable)]
+      (j/call dispose :then (fn [dispose] (dispose)))
+      (swap! subscriptions dissoc observable))))
 
 ;;; Implementation
 
@@ -228,6 +240,13 @@
                             (resolve nil)
                             (reject error))))))))
 
+(defn promise?
+  [p]
+  (boolean
+   (and (instance? js/Promise p)
+        (j/get p :then)
+        (j/get p :catch))))
+
 (defn query
   [query]
   (j/call query :query))
@@ -299,8 +318,7 @@
 
 (defn compile
   [database expr]
-  (let [expr (cond-> expr
-               (= :table (first (last expr))) (conj [:query]))]
+  (let [expr (correct-expr expr)]
     (reduce (fn [result [op & args]]
               (case op
                 :table (table result (first args))
@@ -346,3 +364,12 @@
       (js->clj obj :keywordize-keys true))
 
     :else obj))
+
+(defn table-expr?
+  [expr]
+  (boolean (#{:table} (first (last expr)))))
+
+(defn correct-expr
+  [expr]
+  (cond-> expr
+    (table-expr? expr) (conj [:query])))
